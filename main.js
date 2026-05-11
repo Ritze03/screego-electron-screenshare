@@ -23,17 +23,24 @@ function isRunning() {
 
 const args = process.argv;
 
+if (!args.includes('--daemon')) {
+    app.disableHardwareAcceleration();
+    app.commandLine.appendSwitch('disable-gpu');
+    app.commandLine.appendSwitch('disable-software-rasterizer');
+    app.commandLine.appendSwitch('disable-dev-shm-usage');
+}
+
 const openIndex = args.indexOf('--open');
 const openUrl = openIndex !== -1 && openIndex + 1 < args.length ? args[openIndex + 1] : null;
 
 if (args.includes('--open') && !openUrl) {
     console.error("Error: --open requires a URL argument.");
-    app.exit(1);
+    process.exit(1);
 }
 
 if (args.includes('--status')) {
     console.log(isRunning() ? "Active" : "Inactive");
-    app.exit(0);
+    process.exit(0);
 }
 
 if (args.includes('--url')) {
@@ -42,13 +49,13 @@ if (args.includes('--url')) {
             console.log(fs.readFileSync(URL_FILE, 'utf8').trim());
         } else {
             console.error("Error: Stream is active but URL is not available yet.");
-            app.exit(1);
+            process.exit(1);
         }
     } else {
         console.error("Error: Not active.");
-        app.exit(1);
+        process.exit(1);
     }
-    app.exit(0);
+    process.exit(0);
 }
 
 if (args.includes('--stop')) {
@@ -66,7 +73,7 @@ if (args.includes('--stop')) {
         if (fs.existsSync(SOCKET_FILE)) fs.unlinkSync(SOCKET_FILE);
         console.log("No instance running.");
     }
-    app.exit(0);
+    process.exit(0);
 }
 
 if (args.includes('--restart')) {
@@ -83,10 +90,15 @@ if (args.includes('--restart')) {
     args.push('--start');
 }
 
+if (!args.includes('--daemon') && args.includes('--open') && isRunning()) {
+    sendCommand(`open ${openUrl}`, `Opening URL in active instance: ${openUrl}`);
+    return;
+}
+
 if (!args.includes('--daemon') && (args.includes('--start') || args.includes('--open'))) {
     if (isRunning()) {
         console.error("Error: screego-electron-screenshare is already running.");
-        app.exit(1);
+        process.exit(1);
     }
 
     if (fs.existsSync(URL_FILE)) fs.unlinkSync(URL_FILE);
@@ -114,7 +126,7 @@ if (!args.includes('--daemon') && (args.includes('--start') || args.includes('--
             const url = fs.readFileSync(URL_FILE, 'utf8').trim();
             console.log("Success! Stream URL:", url);
             clearInterval(checkInterval);
-            app.exit(0);
+            process.exit(0);
         }
         tries++;
         if (tries >= 30) {
@@ -122,7 +134,7 @@ if (!args.includes('--daemon') && (args.includes('--start') || args.includes('--
             try { process.kill(child.pid); } catch (e) { }
             if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE);
             clearInterval(checkInterval);
-            app.exit(1);
+            process.exit(1);
         }
     }, 1000);
 
@@ -133,21 +145,21 @@ if (!args.includes('--daemon') && (args.includes('--start') || args.includes('--
 function sendCommand(cmd, successMsg) {
     if (!isRunning()) {
         console.error("Error: Not active.");
-        app.exit(1);
+        process.exit(1);
     }
     if (!fs.existsSync(SOCKET_FILE)) {
         console.error("Error: Daemon socket not found.");
-        app.exit(1);
+        process.exit(1);
     }
     const client = net.createConnection({ path: SOCKET_FILE }, () => {
         client.write(cmd);
         client.end();
         console.log(successMsg);
-        app.exit(0);
+        process.exit(0);
     });
     client.on('error', (err) => {
         console.error("Error connecting to daemon:", err.message);
-        app.exit(1);
+        process.exit(1);
     });
 }
 
@@ -173,10 +185,109 @@ if (args.includes('--restart-stream')) {
 
 if (!args.includes('--daemon')) {
     console.log("Usage: screego-electron-screenshare {--start|--open <URL>|--status|--url|--stop|--restart|--show|--hide|--toggle-show|--restart-stream}");
-    app.exit(1);
+    process.exit(1);
 }
 
 // ---------------- DAEMON MODE ---------------- //
+
+async function startSession(win, url) {
+    console.log(`Starting session with URL: ${url || "https://app.screego.net/"}`);
+    await win.loadURL(url || "https://app.screego.net/");
+
+    // Wait for the site to load
+    await new Promise(r => setTimeout(r, 3000));
+
+    // Step 1: Click "Create or Join a Room" if it exists
+    const step1 = await win.webContents.executeJavaScript(`
+        (() => {
+            const buttons = Array.from(document.querySelectorAll("button"));
+            const button = buttons.find(b => b.textContent.trim().includes("Create or Join a Room"));
+
+            if (!button) {
+                return { success: false, reason: "Button not found" };
+            }
+
+            button.click();
+
+            return {
+                success: true,
+                buttonText: button.textContent.trim()
+            };
+        })();
+    `);
+
+    console.log("Step 1 (Create/Join Room):", step1);
+
+    if (step1.success) {
+        // Wait for the page URL to contain "?room=" (event-driven, up to 10s)
+        try {
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => reject(new Error("Timed out waiting for room URL")), 10000);
+                const check = setInterval(async () => {
+                    if (win.isDestroyed()) {
+                        clearInterval(check);
+                        return;
+                    }
+                    const currentUrl = await win.webContents.executeJavaScript("window.location.href");
+                    if (currentUrl.includes("?room=")) {
+                        clearInterval(check);
+                        clearTimeout(timeout);
+                        resolve();
+                    }
+                }, 500);
+            });
+        } catch (e) {
+            console.error(e.message);
+        }
+    }
+
+    // Poll for the Start Presentation button to appear (up to 5s)
+    let buttonFound = false;
+    for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 500));
+        if (win.isDestroyed()) return;
+        buttonFound = await win.webContents.executeJavaScript(`
+            !!document.querySelector('button[aria-label="Start Presentation"]')
+        `);
+        if (buttonFound) break;
+    }
+
+    if (!win.isDestroyed()) {
+        win.webContents.sendInputEvent({ type: 'mouseMove', x: 100, y: 100 });
+    }
+
+    // Step 2: Click "Start Presentation" button (identified by aria-label)
+    const step2 = await win.webContents.executeJavaScript(`
+        (async () => {
+            window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 100, clientY: 100 }));
+            await new Promise(r => setTimeout(r, 100));
+            const button = document.querySelector('button[aria-label="Start Presentation"]');
+
+            if (!button) {
+                return {
+                    success: false,
+                    error: "Start Presentation button not found"
+                };
+            }
+
+            button.click();
+
+            return {
+                success: true,
+                buttonLabel: button.getAttribute("aria-label"),
+                url: window.location.href
+            };
+        })();
+    `);
+
+    console.log("Step 2 (Start Presentation):", step2);
+
+    if (step2.success) {
+        // Write the URL to a file so the wrapper script can read it
+        fs.writeFileSync(URL_FILE, step2.url);
+        console.log("Ready:", step2.url);
+    }
+}
 
 async function createWindow() {
     const win = new BrowserWindow({
@@ -220,6 +331,11 @@ async function createWindow() {
                         })();
                     `).catch(console.error);
                 }
+            } else if (cmd.startsWith('open ')) {
+                const url = cmd.substring(5).trim();
+                if (!win.isDestroyed()) {
+                    startSession(win, url).catch(console.error);
+                }
             }
         });
     });
@@ -236,102 +352,7 @@ async function createWindow() {
         });
     });
 
-    await win.loadURL(openUrl || "https://app.screego.net/");
-
-    // Wait for the site to load
-    await new Promise(r => setTimeout(r, 3000));
-
-    if (!openUrl) {
-        // Step 1: Click "Create or Join a Room"
-        const step1 = await win.webContents.executeJavaScript(`
-            (() => {
-                const buttons = Array.from(document.querySelectorAll("button"));
-                const button = buttons.find(b => b.textContent.trim().includes("Create or Join a Room"));
-
-                if (!button) {
-                    return {
-                        success: false,
-                        error: "Button 'Create or Join a Room' not found",
-                        availableButtons: buttons.map(b => b.textContent.trim())
-                    };
-                }
-
-                button.click();
-
-                return {
-                    success: true,
-                    buttonText: button.textContent.trim(),
-                    url: window.location.href
-                };
-            })();
-        `);
-
-        console.log("Step 1:", step1);
-
-        if (!step1.success) return;
-
-        // Wait for the page URL to contain "?room=" (event-driven, up to 10s)
-        await new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => reject(new Error("Timed out waiting for room URL")), 10000);
-            const check = setInterval(async () => {
-                const url = await win.webContents.executeJavaScript("window.location.href");
-                if (url.includes("?room=")) {
-                    clearInterval(check);
-                    clearTimeout(timeout);
-                    resolve();
-                }
-            }, 500);
-        });
-    }
-
-    // Poll for the Start Presentation button to appear (up to 5s)
-    let buttonFound = false;
-    for (let i = 0; i < 10; i++) {
-        await new Promise(r => setTimeout(r, 500));
-        buttonFound = await win.webContents.executeJavaScript(`
-            !!document.querySelector('button[aria-label="Start Presentation"]')
-        `);
-        if (buttonFound) break;
-    }
-
-    win.webContents.sendInputEvent({ type: 'mouseMove', x: 100, y: 100 });
-
-    // Step 2: Click "Start Presentation" button (identified by aria-label)
-    const step2 = await win.webContents.executeJavaScript(`
-        (async () => {
-            window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 100, clientY: 100 }));
-            await new Promise(r => setTimeout(r, 100));
-            const button = document.querySelector('button[aria-label="Start Presentation"]');
-
-            if (!button) {
-                const allAriaLabels = Array.from(document.querySelectorAll("button"))
-                    .map(b => b.getAttribute("aria-label"))
-                    .filter(Boolean);
-                return {
-                    success: false,
-                    error: "Start Presentation button not found",
-                    availableAriaLabels: allAriaLabels
-                };
-            }
-
-            button.click();
-
-            return {
-                success: true,
-                buttonLabel: button.getAttribute("aria-label"),
-                url: window.location.href
-            };
-        })();
-    `);
-
-    console.log("Step 2:", step2);
-
-    if (step2.success) {
-        // Write the URL to a file so the wrapper script can read it
-        require('fs').writeFileSync(URL_FILE, step2.url);
-        console.log("Ready:", step2.url);
-        console.log("Keeping Electron running to maintain the screen sharing session.");
-    }
+    await startSession(win, openUrl);
 }
 
 app.whenReady().then(createWindow);
