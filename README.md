@@ -56,7 +56,7 @@ chmod +x screego-electron-screenshare
 sudo mv screego-electron-screenshare /usr/bin/
 ```
 
-or
+or to `/usr/local/bin`
 
 ```bash
 wget -o screego-electron-screenshare https://github.com/Ritze03/screego-electron-screenshare/releases/download/v1.0-AppImage/screego-electron-screenshare
