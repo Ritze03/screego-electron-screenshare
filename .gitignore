@@ -1,0 +1,5 @@
+node_modules/
+dist/
+screego-electron-screenshare
+*.log
+debug*.js

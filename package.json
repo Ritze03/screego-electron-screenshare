@@ -1,0 +1,26 @@
+{
+  "name": "screego-electron-screenshare",
+  "version": "1.0.0",
+  "description": "Headless electron screen sharing",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder -l --x64"
+  },
+  "build": {
+    "appId": "com.mo.screego-electron-screenshare",
+    "productName": "screego-electron-screenshare",
+    "linux": {
+      "target": "AppImage",
+      "executableName": "screego-electron-screenshare"
+    }
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^41.5.1",
+    "electron-builder": "^26.8.1"
+  }
+}
