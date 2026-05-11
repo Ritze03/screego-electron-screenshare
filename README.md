@@ -48,8 +48,18 @@ If you have the bundled executable, you can use the following commands:
 
 ### Global Installation (Optional)
 
-If you'd like to use the command anywhere on your system, you can move the compiled binary to your `/usr/local/bin`:
+If you'd like to use the command anywhere on your system, you can move the compiled binary to your `/usr/bin`:
 
 ```bash
+wget -o screego-electron-screenshare https://github.com/Ritze03/screego-electron-screenshare/releases/download/v1.0-AppImage/screego-electron-screenshare
+chmod +x screego-electron-screenshare
+sudo mv screego-electron-screenshare /usr/bin/
+```
+
+or
+
+```bash
+wget -o screego-electron-screenshare https://github.com/Ritze03/screego-electron-screenshare/releases/download/v1.0-AppImage/screego-electron-screenshare
+chmod +x screego-electron-screenshare
 sudo mv screego-electron-screenshare /usr/local/bin/
 ```
